@@ -1,5 +1,12 @@
 {
- "cities": [],
+ "cities": [
+  {
+   "name": "Nancy",
+   "lat": 48.6921,
+   "lon": 6.1844,
+   "radius_km": 10
+  }
+ ],
  "max_rent_eur": null,
  "occupation_modes": []
 }
