@@ -44,6 +44,29 @@ POPULAR_CITIES = [
     "Nice", "Rouen", "Dijon", "Clermont-Ferrand",
 ]
 
+# Student cities with built-in coordinates (lat, lon), so /add works even when
+# the geocoding services are slow or block GitHub's servers.
+KNOWN_CITIES = {
+    "Paris": (48.8566, 2.3522), "Lyon": (45.7640, 4.8357), "Marseille": (43.2965, 5.3698),
+    "Toulouse": (43.6047, 1.4442), "Lille": (50.6292, 3.0573), "Bordeaux": (44.8378, -0.5792),
+    "Nantes": (47.2184, -1.5536), "Strasbourg": (48.5734, 7.7521), "Montpellier": (43.6108, 3.8767),
+    "Rennes": (48.1173, -1.6778), "Grenoble": (45.1885, 5.7245), "Nancy": (48.6921, 6.1844),
+    "Nice": (43.7102, 7.2620), "Rouen": (49.4432, 1.0999), "Dijon": (47.3220, 5.0415),
+    "Clermont-Ferrand": (45.7772, 3.0870), "Metz": (49.1193, 6.1757), "Reims": (49.2583, 4.0317),
+    "Tours": (47.3941, 0.6848), "Orléans": (47.9030, 1.9093), "Angers": (47.4784, -0.5632),
+    "Caen": (49.1829, -0.3707), "Brest": (48.3904, -4.4861), "Poitiers": (46.5802, 0.3404),
+    "Limoges": (45.8336, 1.2611), "Besançon": (47.2378, 6.0241), "Amiens": (49.8941, 2.2958),
+    "Le Mans": (48.0061, 0.1996), "Saint-Étienne": (45.4397, 4.3872), "Pau": (43.2951, -0.3708),
+    "Perpignan": (42.6887, 2.8948), "Toulon": (43.1242, 5.9280), "Aix-en-Provence": (43.5297, 5.4474),
+    "Avignon": (43.9493, 4.8055), "Nîmes": (43.8367, 4.3601), "La Rochelle": (46.1603, -1.1511),
+    "Mulhouse": (47.7508, 7.3359), "Valenciennes": (50.3570, 3.5235), "Cergy": (49.0364, 2.0761),
+    "Versailles": (48.8049, 2.1204), "Créteil": (48.7904, 2.4556), "Nanterre": (48.8924, 2.2071),
+    "Évry": (48.6239, 2.4294), "Lannion": (48.7326, -3.4566), "Troyes": (48.2973, 4.0744),
+    "Chambéry": (45.5646, 5.9178), "Annecy": (45.8992, 6.1294), "Vannes": (47.6582, -2.7608),
+    "Lorient": (47.7483, -3.3700), "Corte": (42.3063, 9.1497), "Ajaccio": (41.9192, 8.7386),
+    "Bayonne": (43.4929, -1.4748),
+}
+
 BOT_COMMANDS = [
     ("add", "Add a city — /add Lyon (or /add Lyon 15 for 15 km)"),
     ("remove", "Stop watching a city — /remove Lyon"),
@@ -52,6 +75,18 @@ BOT_COMMANDS = [
     ("now", "Show everything available right now"),
     ("help", "How to use this bot"),
 ]
+
+BOT_DESCRIPTION = (
+    "🏠 I watch CROUS student housing (trouverunlogement.lescrous.fr) and send you a "
+    "message as soon as a room opens up in your cities.\n\n"
+    "How to use me:\n"
+    "1. Press START\n"
+    "2. Pick your cities with the buttons, or type /add Lyon\n"
+    "3. Wait: I check every few minutes and notify you\n\n"
+    "⏱ I reply to messages within ~5–10 minutes (I'm not online all the time)."
+)
+BOT_SHORT_DESCRIPTION = "Get notified instantly when a CROUS room opens up in your city."
+SETUP_VERSION = 2  # bump to re-send commands/description to Telegram
 
 
 # ---------------------------------------------------------------- helpers
@@ -126,6 +161,9 @@ def current_tool_id():
 
 def geocode(query):
     """Return (name, lat, lon) of a French city, or None."""
+    for name, (lat, lon) in KNOWN_CITIES.items():
+        if norm(name) == norm(query):
+            return name, lat, lon
     q = urllib.parse.urlencode({"q": query, "type": "municipality", "limit": 1})
     try:
         feats = json.loads(http(f"https://data.geopf.fr/geocodage/search?{q}", timeout=15))["features"]
@@ -136,7 +174,10 @@ def geocode(query):
         pass
     # Fallback: OpenStreetMap
     q = urllib.parse.urlencode({"q": query, "countrycodes": "fr", "format": "json", "limit": 1})
-    res = json.loads(http(f"https://nominatim.openstreetmap.org/search?{q}"))
+    try:
+        res = json.loads(http(f"https://nominatim.openstreetmap.org/search?{q}", timeout=15))
+    except (urllib.error.URLError, TimeoutError):
+        raise LookupError("geocoding services unreachable")
     if res:
         return res[0]["display_name"].split(",")[0], round(float(res[0]["lat"]), 4), round(float(res[0]["lon"]), 4)
     return None
@@ -247,6 +288,8 @@ HELP = (
 
 def handle_command(text, cfg, chat_id, ctx):
     """Apply one command. ctx collects side effects for the listing step."""
+    if not text.startswith("/") and any(norm(c) == norm(text) for c in KNOWN_CITIES):
+        text = "/add " + text  # plain "Lyon" means "/add Lyon"
     parts = text.strip().split(maxsplit=1)
     cmd = parts[0].split("@")[0].lower() if parts else ""
     arg = parts[1].strip() if len(parts) > 1 else ""
@@ -262,7 +305,11 @@ def handle_command(text, cfg, chat_id, ctx):
         m = re.match(r"^(.*?)\s+(\d{1,3})\s*(km)?$", arg, re.I)
         if m:
             arg, radius = m.group(1), int(m.group(2))
-        geo = geocode(arg)
+        try:
+            geo = geocode(arg)
+        except LookupError:
+            return send(chat_id, f"⚠️ I couldn't look up “{html.escape(arg)}” right now. "
+                                 "Please try again in a few minutes.")
         if not geo:
             return send(chat_id, f"❌ I couldn't find a French city called “{html.escape(arg)}”.")
         name, lat, lon = geo
@@ -308,8 +355,10 @@ def handle_command(text, cfg, chat_id, ctx):
 def read_commands(state, cfg, ctx):
     """Process messages sent to the bot since the last run."""
     if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+        print("telegram: no TELEGRAM_BOT_TOKEN, skipping messages")
         return
     updates = tg("getUpdates", offset=state.get("offset", 0), timeout=0)
+    print(f"telegram: {len(updates)} new message(s), owner={state.get('owner') or 'none yet'}")
     for u in updates:
         state["offset"] = u["update_id"] + 1
         msg = u.get("message") or {}
@@ -322,6 +371,7 @@ def read_commands(state, cfg, ctx):
         if chat_id != state["owner"]:
             send(chat_id, "Sorry, this is a private bot.")
             continue
+        print(f"telegram: command {text!r}")
         handle_command(text, cfg, chat_id, ctx)
 
 
@@ -340,9 +390,14 @@ def main():
     if "--test" in sys.argv:
         return send(state.get("owner"), "✅ CROUS bot is connected.")
 
-    if os.environ.get("TELEGRAM_BOT_TOKEN") and not state.get("commands_set"):
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and state.get("setup_version") != SETUP_VERSION:
         tg("setMyCommands", commands=[{"command": c, "description": d} for c, d in BOT_COMMANDS])
-        state["commands_set"] = True
+        tg("setMyDescription", description=BOT_DESCRIPTION)
+        tg("setMyShortDescription", short_description=BOT_SHORT_DESCRIPTION)
+        tg("deleteWebhook")  # getUpdates doesn't work while a webhook is set
+        state.pop("commands_set", None)
+        state["setup_version"] = SETUP_VERSION
+        print("telegram: menu and description set")
 
     ctx = {"fresh": set(), "show_all": False}
     read_commands(state, cfg, ctx)
@@ -386,6 +441,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except urllib.error.HTTPError as err:
+        if err.code in (401, 403, 404) and "api.telegram.org" in (err.url or ""):
+            sys.exit("❌ Telegram rejected the token: check the TELEGRAM_BOT_TOKEN secret.")
+        print(f"network error, skipping this run: {err}")
     except (urllib.error.URLError, TimeoutError) as err:
         # CROUS or Telegram down/slow: skip this run quietly, the next one retries.
         print(f"network error, skipping this run: {err}")
