@@ -1,0 +1,34 @@
+name: CROUS watcher
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 min (GitHub may delay runs a few minutes)
+  workflow_dispatch:         # "Run workflow" button for manual runs
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crous
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check CROUS listings
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py
+      - name: Save cities and seen listings
+        run: |
+          git config user.name "crous-bot"
+          git config user.email "crous-bot@users.noreply.github.com"
+          git add config.json seen.json
+          git diff --cached --quiet || (git commit -m "update bot state" && git pull --rebase && git push)
